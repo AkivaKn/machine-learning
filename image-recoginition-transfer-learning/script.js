@@ -26,14 +26,26 @@ let trainingDataInputs = [];
 let trainingDataOutputs = [];
 let examplesCount = [];
 let predict = false;
+let mobileNetBase = undefined;
+
+function customPrint(line) {
+  let p = document.createElement('p');
+  p.innerText = line;
+  document.body.appendChild(p);
+}
 
 async function loadMobileNetFeatureModel() {
   const URL =
-    "https://www.kaggle.com/models/google/mobilenet-v3/TfJs/small-100-224-feature-vector/1";
-  mobilenet = await tf.loadGraphModel(URL, { fromTFHub: true });
-  STATUS.innerText = "MobileNet v3 loaded successfully!";
+    "https://storage.googleapis.com/jmstore/TensorFlowJS/EdX/SavedModels/mobilenet-v2/model.json";
+  mobilenet = await tf.loadLayersModel(URL);
+  STATUS.innerText = "MobileNet v2 loaded successfully!";
+  mobilenet.summary(null, null, customPrint);
+  const lastLayer = mobilenet.getLayer('global_average_pooling2d_1');
+  mobileNetBase = tf.model({ inputs: mobilenet.inputs, outputs: lastLayer.output });
+  mobileNetBase.summary();
+
   tf.tidy(function () {
-    let answer = mobilenet.predict(
+    let answer = mobileNetBase.predict(
       tf.zeros([1, MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH, 3])
     );
     console.log(answer.shape);
@@ -43,7 +55,7 @@ loadMobileNetFeatureModel();
 
 let model = tf.sequential();
 model.add(
-  tf.layers.dense({ inputShape: [1024], units: 128, activation: "relu" })
+  tf.layers.dense({ inputShape: [1280], units: 64, activation: "relu" })
 );
 model.add(
   tf.layers.dense({ units: CLASS_NAMES.length, activation: "softmax" })
@@ -101,7 +113,7 @@ function dataGatherLoop() {
 
       let normalizedTensorFrame = resizedTensorFrame.div(255);
 
-      return mobilenet.predict(normalizedTensorFrame.expandDims()).squeeze();
+      return mobileNetBase.predict(normalizedTensorFrame.expandDims()).squeeze();
     });
 
     trainingDataInputs.push(imageFeatures);
@@ -133,7 +145,7 @@ async function trainAndPredict() {
   let results = await model.fit(inputsAsTensor, oneHotOutputs, {
     shuffle: true,
     batchSize: 5,
-    epochs: 10,
+    epochs: 5,
     callbacks: { onEpochEnd: logProgress },
   });
 
@@ -142,6 +154,15 @@ async function trainAndPredict() {
   inputsAsTensor.dispose();
 
   predict = true;
+  let combinedModel = tf.sequential();
+  combinedModel.add(mobileNetBase);
+  combinedModel.add(model);
+  combinedModel.compile({
+    optimizer: 'adam',
+    loss: (CLASS_NAMES.length === 2) ? 'binaryCrossentropy' : 'categoricalCrossentropy'
+  });
+  combinedModel.summary();
+  await combinedModel.save('downloads://my-model');
   predictLoop();
 }
 
@@ -159,7 +180,7 @@ function predictLoop() {
         true
       );
 
-      let imageFeatures = mobilenet.predict(resizedTensorFrame.expandDims());
+      let imageFeatures = mobileNetBase.predict(resizedTensorFrame.expandDims());
       let prediction = model.predict(imageFeatures).squeeze();
       let highestIndex = prediction.argMax().arraySync();
       let predictionArray = prediction.arraySync();
